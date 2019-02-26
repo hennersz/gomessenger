@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"io"
 	"net"
-	"sync"
 
 	log "github.com/sirupsen/logrus"
 )
@@ -16,11 +15,6 @@ type clientState struct {
 	state string
 	name  string
 	in    *bufio.Reader
-}
-
-type safeSocket struct {
-	c   net.Conn
-	mux sync.Mutex
 }
 
 func newClientState(in io.Reader) *clientState {
@@ -64,7 +58,11 @@ func writeThread(c net.Conn, input chan string) {
 			"connection": c.RemoteAddr(),
 			"message":    msg,
 		}).Info("Writing message")
-		c.Write([]byte(msg))
+		_, err := c.Write([]byte(msg))
+		if err != nil {
+			log.Error(err)
+			break
+		}
 	}
 	c.Close()
 }
