@@ -1,10 +1,10 @@
 package main
 
 import (
-	"log"
 	"os"
 
 	"github.com/hennersz/gomessenger/server"
+	log "github.com/sirupsen/logrus"
 )
 
 func main() {
@@ -14,6 +14,6 @@ func main() {
 		log.Fatal("Please provide a port number")
 	}
 
-	portNum := arguments[1]
-	server.StartServer(portNum)
+	server := server.NewMessagingServer("127.0.0.1:" + arguments[1])
+	server.Run()
 }

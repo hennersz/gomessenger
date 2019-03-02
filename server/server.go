@@ -2,99 +2,202 @@ package server
 
 import (
 	"bufio"
+	"errors"
 	"io"
 	"net"
+	"strings"
+	"sync"
 
 	log "github.com/sirupsen/logrus"
 )
 
-//INIT is the initial state of a client connection
-const INIT = "INIT"
-
-type clientState struct {
-	state string
-	name  string
-	in    *bufio.Reader
+type MessagingServer struct {
+	addr          string
+	server        net.Listener
+	idCounter     uint
+	counterMux    sync.Mutex
+	messageQueue  chan string
+	connections   []*messenger
+	connectionMux sync.RWMutex
+	names         map[string]bool
+	nameMapMux    sync.RWMutex
 }
 
-func newClientState(in io.Reader) *clientState {
-	res := new(clientState)
-	res.state = INIT
-	res.in = bufio.NewReader(in)
-	return res
+func NewMessagingServer(addr string) *MessagingServer {
+	newServer := new(MessagingServer)
+	newServer.messageQueue = make(chan string)
+	newServer.names = make(map[string]bool)
+	newServer.addr = addr
+	return newServer
 }
 
-//Connection handling code
-func handleConnection(c net.Conn, input, output chan string) {
-	go readThread(c, output)
-	go writeThread(c, input)
+type messenger struct {
+	rw   *bufio.ReadWriter
+	addr string
+	name string
+	id   uint
+	mux  sync.Mutex
+	in   chan string
+	out  chan string
 }
 
-func readThread(c net.Conn, output chan string) {
-	state := newClientState(c)
-	for {
-		switch state.state {
-		case INIT:
+func (s *MessagingServer) Run() (err error) {
+	s.server, err = net.Listen("tcp", s.addr)
+	if err != nil {
+		return
+	}
+	defer s.Close()
 
+	if strings.Compare(s.server.Addr().String(), s.addr) != 0 {
+		s.addr = s.server.Addr().String()
+	}
+
+	log.WithFields(log.Fields{
+		"Address": s.addr,
+	}).Info("Server started")
+	go s.startMessageWriter()
+	return s.handleConnections()
+}
+
+func (s *MessagingServer) Close() (err error) {
+	return s.server.Close()
+}
+
+func (s *MessagingServer) startMessageWriter() {
+	for msg := range s.messageQueue {
+		s.connectionMux.RLock()
+		for _, c := range s.connections {
+			c.in <- msg
 		}
-		data, err := bufio.NewReader(c).ReadString('\n')
+		s.connectionMux.RUnlock()
+	}
+}
+
+func (s *MessagingServer) handleConnections() (err error) {
+	for {
+		conn, err := s.server.Accept()
+		if err != nil || conn == nil {
+			err = errors.New("could not accept connection")
+			break
+		}
+
+		go s.handleConnection(conn)
+	}
+	return
+}
+
+func (s *MessagingServer) handleConnection(c net.Conn) {
+	newConn, err := s.initialiseConnection(c)
+	if err != nil {
+		log.Error(err)
+		return
+	}
+	s.addConnection(newConn)
+	newConn.start()
+	log.WithFields(log.Fields{
+		"Address": newConn.addr,
+		"Name":    newConn.name,
+		"ID":      newConn.id,
+	}).Info("New client connected")
+}
+
+func (s *MessagingServer) initialiseConnection(c net.Conn) (*messenger, error) {
+	newConn := new(messenger)
+	newConn.rw = bufio.NewReadWriter(bufio.NewReader(c), bufio.NewWriter(c))
+	newConn.addr = c.RemoteAddr().String()
+	newConn.id = s.getID()
+	newConn.out = s.messageQueue
+	newConn.in = make(chan string)
+	err := newConn.getNameFromUser(s)
+	if err != nil {
+		return nil, err
+	}
+	return newConn, nil
+}
+
+func (s *MessagingServer) addConnection(c *messenger) {
+	s.connectionMux.Lock()
+	s.connections = append(s.connections, c)
+	s.connectionMux.Unlock()
+}
+
+func (s *MessagingServer) getID() (id uint) {
+	s.counterMux.Lock()
+	defer s.counterMux.Unlock()
+	id = s.idCounter
+	s.idCounter++
+	return
+}
+
+func (s *MessagingServer) addName(name string) bool {
+	s.nameMapMux.RLock()
+	taken, ok := s.names[name]
+	s.nameMapMux.RUnlock()
+	if taken && ok {
+		return false
+	}
+	s.nameMapMux.Lock()
+	s.names[name] = true
+	s.nameMapMux.Unlock()
+	return true
+}
+
+func (m *messenger) getNameFromUser(s *MessagingServer) error {
+	m.rw.WriteString("Please enter a name\n")
+	m.rw.Flush()
+	nameSet := false
+	for !nameSet {
+		name, err := m.rw.ReadString('\n')
+		name = strings.TrimSuffix(name, "\n")
 		if err != nil {
-			log.Error(err)
+			return err
+		}
+
+		if s.addName(name) {
+			m.name = name
+			nameSet = true
+		} else {
+			m.rw.WriteString("Name taken, please choose another\n")
+			m.rw.Flush()
+		}
+	}
+	return nil
+}
+
+func (m *messenger) start() {
+	go m.readMessages()
+	go m.writeMessages()
+}
+
+func (m *messenger) readMessages() {
+	for {
+		data, err := m.rw.ReadString('\n')
+		if err != nil {
+			if err != io.EOF {
+				log.Error(err)
+			}
+			log.WithFields(log.Fields{
+				"connection": m.addr,
+				"id":         m.id,
+			}).Info("Connection closed")
 			break
 		}
 		log.WithFields(log.Fields{
-			"connection": c.RemoteAddr,
+			"connection": m.addr,
 			"message":    data,
 		}).Info("Read Message")
 
-		output <- data
+		m.out <- data
 	}
-	c.Close()
 }
 
-func writeThread(c net.Conn, input chan string) {
-	for msg := range input {
+func (m *messenger) writeMessages() {
+	for msg := range m.in {
+		m.rw.WriteString(msg)
+		m.rw.Flush()
 		log.WithFields(log.Fields{
-			"connection": c.RemoteAddr(),
+			"connection": m.addr,
 			"message":    msg,
-		}).Info("Writing message")
-		_, err := c.Write([]byte(msg))
-		if err != nil {
-			log.Error(err)
-			break
-		}
-	}
-	c.Close()
-}
-
-//StartServer starts a new messaging server
-func StartServer(portNum string) {
-	PORT := ":" + portNum
-	l, err := net.Listen("tcp4", PORT)
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer l.Close()
-
-	log.WithFields(log.Fields{
-		"Port": PORT,
-	}).Info("Server started")
-
-	cw := newChannelWriter()
-	go cw.start()
-
-	for {
-		c, err := l.Accept()
-		if err != nil {
-			log.Error(err)
-		}
-
-		log.WithFields(log.Fields{
-			"connection": c.RemoteAddr(),
-		}).Info("New connection made")
-
-		newConnCh := make(chan string)
-		cw.addOutputChannel(newConnCh)
-		go handleConnection(c, newConnCh, cw.in)
+		}).Info("Wrote message")
 	}
 }

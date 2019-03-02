@@ -8,25 +8,25 @@ import (
 
 type channelWriter struct {
 	ch  []chan string
-	in  chan string
+	In  chan string
 	mux sync.Mutex
 }
 
-func newChannelWriter() *channelWriter {
+func NewChannelWriter() *channelWriter {
 	cw := new(channelWriter)
-	cw.in = make(chan string)
+	cw.In = make(chan string)
 	return cw
 }
 
-func (cw *channelWriter) addOutputChannel(out chan string) {
+func (cw *channelWriter) AddOutputChannel(out chan string) {
 	cw.mux.Lock()
 	defer cw.mux.Unlock()
 	cw.ch = append(cw.ch, out)
 }
 
-func (cw *channelWriter) start() {
+func (cw *channelWriter) Start() {
 	log.Info("Channel writer started")
-	for msg := range cw.in {
+	for msg := range cw.In {
 		cw.mux.Lock()
 		for _, out := range cw.ch {
 			out <- msg
