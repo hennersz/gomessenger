@@ -11,6 +11,7 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
+//A MessagingServer is a server that forwards messages from one client to all other clients
 type MessagingServer struct {
 	addr          string
 	server        net.Listener
@@ -23,6 +24,7 @@ type MessagingServer struct {
 	nameMapMux    sync.RWMutex
 }
 
+//NewMessagingServer creates a new MessagingServer that listens on the supplied address
 func NewMessagingServer(addr string) *MessagingServer {
 	newServer := new(MessagingServer)
 	newServer.messageQueue = make(chan string)
@@ -32,15 +34,17 @@ func NewMessagingServer(addr string) *MessagingServer {
 }
 
 type messenger struct {
-	rw   *bufio.ReadWriter
-	addr string
-	name string
-	id   uint
-	mux  sync.Mutex
-	in   chan string
-	out  chan string
+	rw           *bufio.ReadWriter
+	addr         string
+	name         string
+	id           uint
+	mux          sync.RWMutex
+	in           chan string
+	out          chan string
+	disconnected bool
 }
 
+//Run starts the MessagingServer listening for connections and forwarding messages
 func (s *MessagingServer) Run() (err error) {
 	s.server, err = net.Listen("tcp", s.addr)
 	if err != nil {
@@ -59,6 +63,7 @@ func (s *MessagingServer) Run() (err error) {
 	return s.handleConnections()
 }
 
+//Close stops the MessagingServer
 func (s *MessagingServer) Close() (err error) {
 	return s.server.Close()
 }
@@ -93,12 +98,12 @@ func (s *MessagingServer) handleConnection(c net.Conn) {
 		return
 	}
 	s.addConnection(newConn)
-	newConn.start()
 	log.WithFields(log.Fields{
 		"Address": newConn.addr,
 		"Name":    newConn.name,
 		"ID":      newConn.id,
 	}).Info("New client connected")
+	newConn.start()
 }
 
 func (s *MessagingServer) initialiseConnection(c net.Conn) (*messenger, error) {

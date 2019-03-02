@@ -14,7 +14,9 @@ func TestMain(m *testing.M) {
 	fmt.Println("running")
 	s := NewMessagingServer("127.0.0.1:8000")
 	go s.Run()
-	os.Exit(m.Run())
+	eCode := m.Run()
+	s.Close()
+	os.Exit(eCode)
 }
 
 var letters = []rune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ")
@@ -27,10 +29,34 @@ func randomString(n uint) string {
 	return string(b)
 }
 
-func createConnections(t *testing.T) []*bufio.ReadWriter {
+type testConn struct {
+	c  net.Conn
+	rw bufio.ReadWriter
+	t  *testing.T
+}
+
+func (t *testConn) read() string {
+	data, err := t.rw.ReadString('\n')
+	if err != nil {
+		t.t.Error(err)
+	}
+	return data
+}
+
+func (t *testConn) write(data string) {
+	t.rw.WriteString(data)
+	t.rw.WriteString("\n")
+	t.rw.Flush()
+}
+
+func (t *testConn) close() {
+	t.c.Close()
+}
+
+func createConnections(t *testing.T, n int) []*bufio.ReadWriter {
 	t.Helper()
 	var connections []*bufio.ReadWriter
-	for i := 0; i < 2; i++ {
+	for i := 0; i < n; i++ {
 		newConn, err := net.Dial("tcp", "127.0.0.1:8000")
 		if err != nil {
 			t.Fatal(err)
@@ -49,7 +75,7 @@ func createConnections(t *testing.T) []*bufio.ReadWriter {
 }
 
 func Test_HappyPath(t *testing.T) {
-	conns := createConnections(t)
+	conns := createConnections(t, 2)
 	conns[0].WriteString("hello\n")
 	conns[0].Flush()
 	data, err := conns[1].ReadString('\n')
